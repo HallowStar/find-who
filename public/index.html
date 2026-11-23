@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en" data-type="software" data-motion="on" data-radius="soft" data-buttons="solid">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#100e1b">
+  <meta name="description" content="Join Dog, Dragon or Cat and find people who match 30 icebreaker prompts.">
+  <meta name="page-type" content="software">
+  <meta name="site-kind" content="gaming">
+  <meta property="og:title" content="Find Someone Who?">
+  <meta property="og:description" content="Thirty icebreaker prompts. Three groups. Who will you find?">
+  <meta property="og:image" content="https://find-someone-who-simbb.endearingrabbit2.chatgpt.site/assets/mascots.webp">
+  <title>Find Someone Who?</title>
+  <link rel="icon" href="./assets/icon.png" type="image/png">
+  <link rel="preload" href="./assets/pixelify.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="skip" href="#main">Skip to game</a>
+    <div class="wrap masthead">
+      <a href="./" class="wordmark"><span class="brand-icon" aria-hidden="true">?</span><span>FIND WHO</span></a>
+    </div>
+  </header>
+  <main id="main" class="wrap">
+    <section class="lobby hero" id="lobby" data-enter aria-labelledby="game-title" hidden>
+      <div class="hero-banner">
+        <div class="hero-copy">
+          <p class="eyebrow"><span aria-hidden="true">✦</span> SIMBB ICEBREAKER</p>
+          <h1 id="game-title">Find someone <em>who?</em></h1>
+          <p class="intro">Pick your group, meet someone new, and find a match for each prompt.</p>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <span class="pixel-spark spark-one">✦</span><span class="pixel-spark spark-two">✧</span>
+          <img src="./assets/mascots.webp" alt="" width="1080" height="540" fetchpriority="high">
+        </div>
+      </div>
+      <form id="join-form" class="join-form">
+        <fieldset>
+          <legend>Choose your group</legend>
+          <p class="muted group-instruction">Dog, Dragon and Cat each play the same 30 prompts.</p>
+          <div id="join-teams" class="team-grid"></div>
+        </fieldset>
+        <div class="join-fields">
+          <label class="stacked-label" for="player-name">Your name
+            <input type="text" id="player-name" name="name" placeholder="Enter your name" autocomplete="nickname" maxlength="70" required>
+          </label>
+          <button type="submit" class="primary">Join the game <span aria-hidden="true">✦</span></button>
+        </div>
+        <p class="form-error" id="join-error" role="alert"></p>
+      </form>
+    </section>
+    <section id="board" hidden aria-labelledby="board-title"></section>
+    <section id="load-failure" hidden aria-labelledby="load-title"></section>
+    <noscript><p>Turn on JavaScript to play Find Someone Who.</p></noscript>
+  </main>
+  <dialog id="answer-dialog" aria-labelledby="answer-title">
+    <form id="answer-form">
+      <div class="dialog-head">
+        <div class="prompt-icon" id="answer-icon" aria-hidden="true"></div>
+        <button class="quiet icon-button" type="button" id="close-answer" aria-label="Close answer">×</button>
+      </div>
+      <p class="eyebrow">FIND SOMEONE WHO</p>
+      <h2 id="answer-title"></h2>
+      <p id="answer-hint" class="muted"></p>
+      <label class="stacked-label" for="match-name">Their name
+        <input type="text" id="match-name" name="name" maxlength="70" autocomplete="off" placeholder="Enter their name" required>
+      </label>
+      <fieldset>
+        <legend>Their group</legend>
+        <div id="answer-teams" class="team-grid compact"></div>
+      </fieldset>
+      <p class="form-error" id="answer-error" role="alert"></p>
+      <button class="primary" type="submit">Save answer <span aria-hidden="true">✓</span></button>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status"></div>
+</body>
+</html>

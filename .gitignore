@@ -1,0 +1,5 @@
+.taste-skill/
+dist/
+*.sqlite*
+.DS_Store
+.env
