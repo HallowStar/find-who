@@ -39,7 +39,9 @@ async function api(path, method = "GET", payload) {
   }
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(result.error || "Something went wrong. Try again in a moment.");
+    const error = new Error(result.error || "Something went wrong. Try again in a moment.");
+    error.status = response.status;
+    throw error;
   }
   if (apiOrigin && result.token) {
     playerToken = result.token;
@@ -171,7 +173,23 @@ answerForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const id = selectedPrompt.id;
   submitForm(answerForm, document.querySelector("#answer-error"), async (fields) => {
-    const { answer } = await api("answer/" + id, "PUT", fields);
+    let answer;
+    try {
+      ({ answer } = await api("answer/" + id, "PUT", fields));
+    } catch (error) {
+      if (error.status !== 401) throw error;
+      if (apiOrigin) localStorage.removeItem(tokenKey);
+      playerToken = null;
+      filter = "all";
+      setResult({ player: null, answers: [] });
+      dialog.close();
+      joinForm.reset();
+      pickPage(lobby);
+      window.scrollTo(0, 0);
+      focusHeading(document.querySelector("#game-title"));
+      notify("Join the game again to start a fresh board.");
+      return;
+    }
     answers.set(id, answer);
     dialog.close();
     renderBoard();

@@ -112,12 +112,14 @@ async function saveAnswer(request, db, promptId) {
   const { name: rawName, team } = await readFields(request);
   const name = fitName(rawName);
   if (!name || !groupIds.has(team)) return fail("Enter their name and choose their group.", 400);
-  await db.prepare(`
+  const saved = await db.prepare(`
     INSERT INTO answers (player_id, prompt_id, match_name, match_team, updated_at)
-    VALUES (?, ?, ?, ?, ?)
+    SELECT id, ?, ?, ?, ? FROM players WHERE id = ?
     ON CONFLICT (player_id, prompt_id) DO UPDATE
     SET match_name = excluded.match_name, match_team = excluded.match_team, updated_at = excluded.updated_at
-  `).bind(player.id, promptId, name, team, Date.now()).run();
+    RETURNING prompt_id
+  `).bind(promptId, name, team, Date.now(), player.id).first();
+  if (!saved) return fail("Your player session expired. Join the game again.", 401);
   return json({ answer: { prompt_id: promptId, match_name: name, match_team: team } });
 }
 
@@ -153,7 +155,14 @@ const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[character]);
 
-function renderOwner({ teams, players }) {
+const roundVersion = "COALESCE((SELECT version FROM game_round WHERE id = 1), 0)";
+const resetMessages = new Map([
+  ["done", "Game reset. Players can join a fresh round."],
+  ["confirm", "Type RESET to confirm the game reset."],
+  ["stale", "This round has already been reset. Check the current scores before trying again."],
+]);
+
+function renderOwner({ teams, players }, version, resetResult) {
   const totals = TEAMS.map(({ id, icon, name }) => {
     const { points, players: count, answers } = teams[id];
     return `<div class="summary team-${id}">
@@ -193,9 +202,22 @@ function renderOwner({ teams, players }) {
       <div><h1>Owner dashboard</h1><p class="muted">Same group +1 point · Different group +2 points</p></div>
       <div><a class="quiet owner-tools" href="/owner">Refresh scores</a></div>
     </div>
+    ${resetMessages.has(resetResult) ? `<p class="reset-status" role="status">${resetMessages.get(resetResult)}</p>` : ""}
     <div class="summary-grid" role="group" aria-label="Group totals">${totals}</div>
     <h2 class="owner-list-title">Player scores</h2>
     ${rows || '<p class="empty-message">Players and scores will appear as people join the game.</p>'}
+    <details class="reset-panel" ${resetResult === "confirm" ? "open" : ""}>
+      <summary>Reset game</summary>
+      <form action="/owner/reset" method="post" class="reset-form">
+        <p id="reset-warning">This permanently clears all players, answers and scores. Everyone will need to join again.</p>
+        <input type="hidden" name="version" value="${version}">
+        <label class="stacked-label" for="reset-confirmation">Type RESET to confirm
+          <input id="reset-confirmation" name="confirmation" type="text" required pattern="RESET"
+            maxlength="5" autocomplete="off" aria-describedby="reset-warning">
+        </label>
+        <button class="quiet reset-button" type="submit">Clear all scores and start over</button>
+      </form>
+    </details>
   </main>
 </body>
 </html>`;
@@ -264,8 +286,42 @@ async function ownerRoute(request, env) {
   </main>
 </body>
 </html>`;
-  const html = request.method === "HEAD" ? null : authorized ? renderOwner(await scores(env.DB)) : lockedPage;
-  return new Response(html, { headers: ownerHeaders });
+  if (request.method === "HEAD") return new Response(null, { headers: ownerHeaders });
+  if (!authorized) return new Response(lockedPage, { headers: ownerHeaders });
+
+  const { version } = await env.DB.prepare(`SELECT ${roundVersion} AS version`).first();
+  const resetResult = new URL(request.url).searchParams.get("reset");
+  return new Response(renderOwner(await scores(env.DB), version, resetResult), { headers: ownerHeaders });
+}
+
+async function resetGame(request, env) {
+  if (!await ownerAuthorized(request, env.OWNER_BOOKMARK_SECRET)) return fail("Owner access required.", 401);
+  if (request.headers.get("Origin") !== new URL(request.url).origin) {
+    return fail("Reset the game from the owner dashboard.", 403);
+  }
+  const form = await request.formData().catch(() => null);
+  const rawVersion = form?.get("version");
+  const version = Number(rawVersion);
+  const redirect = (result) => new Response(null, {
+    status: 303,
+    headers: { ...ownerHeaders, Location: "/owner?reset=" + result },
+  });
+  if (form?.get("confirmation") !== "RESET" || typeof rawVersion !== "string" ||
+      !/^\d+$/.test(rawVersion) || !Number.isSafeInteger(version)) {
+    return redirect("confirm");
+  }
+
+  const db = env.DB;
+  const [, , advance] = await db.batch([
+    db.prepare(`DELETE FROM answers WHERE ${roundVersion} = ?`).bind(version),
+    db.prepare(`DELETE FROM players WHERE ${roundVersion} = ?`).bind(version),
+    db.prepare(`
+      INSERT INTO game_round (id, version)
+      SELECT 1, ? + 1 WHERE ${roundVersion} = ?
+      ON CONFLICT (id) DO UPDATE SET version = excluded.version
+    `).bind(version, version),
+  ]);
+  return redirect(advance.meta.changes ? "done" : "stale");
 }
 
 async function handleApi(request, env, pathname) {
@@ -314,6 +370,7 @@ export default {
         }
         return response;
       }
+      if (pathname === "/owner/reset" && request.method === "POST") return await resetGame(request, env);
       if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
       if (pathname === "/owner" || pathname === "/owner/") return await ownerRoute(request, env);
       const page = pathname === "/";
