@@ -24,7 +24,7 @@ const DB = {
   },
 };
 
-const env = { DB, OWNER_EMAIL: "owner@example.test" };
+const env = { DB, OWNER_BOOKMARK_SECRET: "findwho-local-preview-bookmark" };
 const port = Number(process.env.PORT || 4317);
 createServer(async (incoming, outgoing) => {
   try {

@@ -3,6 +3,9 @@ import { PROMPTS, TEAMS } from "./game-data.mjs";
 
 const PAGES_ORIGIN = "https://hallowstar.github.io";
 const PLAYER_COOKIE = "findwho_player";
+const OWNER_COOKIE = "findwho_owner_bookmark";
+const OWNER_TTL = 30 * 24 * 60 * 60;
+const encoder = new TextEncoder();
 const PLAYER_TTL = 30 * 24 * 60 * 60;
 const groupIds = new Set(TEAMS.map(({ id }) => id));
 
@@ -198,24 +201,70 @@ function renderOwner({ teams, players }) {
 </html>`;
 }
 
+function equalBytes(left, right) {
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let index = 0; index < left.length; index++) diff |= left[index] ^ right[index];
+  return diff === 0;
+}
+
+const digest = async (input) => new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(input)));
+
+async function ownerSignature(key, payload) {
+  const signingKey = await crypto.subtle.importKey(
+    "raw", encoder.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, encoder.encode(payload)));
+  return Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function createOwnerSession(request, key) {
+  if (request.headers.get("Origin") !== new URL(request.url).origin) {
+    return fail("Open the private dashboard link directly.", 403);
+  }
+  if (!key) return fail("Owner access is being set up. Try again shortly.", 503);
+  const { key: entered } = await readFields(request);
+  if (typeof entered !== "string" || entered.length > 120 ||
+      !equalBytes(await digest(entered.trim()), await digest(key))) {
+    return fail("This private link is invalid.", 401);
+  }
+  const expires = Math.floor(Date.now() / 1000) + OWNER_TTL;
+  const payload = `owner.${expires}.${crypto.randomUUID()}`;
+  const signature = await ownerSignature(key, payload);
+  return json({ signedIn: true }, 200, {
+    "Set-Cookie": cookie(request, OWNER_COOKIE, `${payload}.${signature}`, OWNER_TTL),
+  });
+}
+
+async function ownerAuthorized(request, key) {
+  const value = getCookie(request, OWNER_COOKIE);
+  if (!key || !value || !/^owner\.\d{1,12}\.[0-9a-f-]{36}\.[0-9a-f]{64}$/.test(value)) return false;
+  const [, expires] = value.split(".");
+  if (Number(expires) <= Date.now() / 1000) return false;
+  const parts = value.lastIndexOf(".");
+  const expected = await ownerSignature(key, value.slice(0, parts));
+  return equalBytes(encoder.encode(expected), encoder.encode(value.slice(parts + 1)));
+}
+
 async function ownerRoute(request, env) {
-  // Sites dispatch supplies these headers after verifying the visitor's ChatGPT session.
-  const userId = request.headers.get("oai-authenticated-user-id");
-  if (!userId) {
-    return new Response(null, {
-      status: 302,
-      headers: { ...ownerHeaders, Location: "/signin-with-chatgpt?return_to=%2Fowner" },
-    });
-  }
-  const email = request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase();
-  const ownerEmail = env.OWNER_EMAIL?.trim().toLowerCase();
-  if (!email || !ownerEmail || email !== ownerEmail) {
-    return new Response(request.method === "HEAD" ? null : "This page is available to the site owner.", {
-      status: 403,
-      headers: { ...ownerHeaders, "Content-Type": "text/plain; charset=utf-8" },
-    });
-  }
-  const html = request.method === "HEAD" ? null : renderOwner(await scores(env.DB));
+  const authorized = await ownerAuthorized(request, env.OWNER_BOOKMARK_SECRET);
+  const lockedPage = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Owner Dashboard · Find Someone Who?</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/owner-access.mjs"></script>
+</head>
+<body>
+  <main id="owner" class="wrap">
+    <h1>Owner dashboard</h1>
+    <p id="owner-status" class="muted" role="status">Open your private dashboard link to view the scores.</p>
+  </main>
+</body>
+</html>`;
+  const html = request.method === "HEAD" ? null : authorized ? renderOwner(await scores(env.DB)) : lockedPage;
   return new Response(html, { headers: ownerHeaders });
 }
 
@@ -223,6 +272,9 @@ async function handleApi(request, env, pathname) {
   const { method } = request;
   if (method !== "GET" && !writeAllowed(request)) return fail("This request must come from the game site.", 403);
 
+  if (pathname === "/api/owner/access" && method === "POST") {
+    return createOwnerSession(request, env.OWNER_BOOKMARK_SECRET);
+  }
   if (pathname === "/api/player") {
     if (method === "GET") return loadPlayer(request, env.DB);
     if (method === "POST") return join(request, env.DB);
