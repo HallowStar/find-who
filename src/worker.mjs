@@ -123,27 +123,31 @@ async function saveAnswer(request, db, promptId) {
   return json({ answer: { prompt_id: promptId, match_name: name, match_team: team } });
 }
 
-async function scores(db) {
+async function scores(db, limit) {
   const { results } = await db.prepare(`
-    SELECT p.id, p.name, p.team, a.prompt_id, a.match_name, a.match_team
+    SELECT p.rowid AS player_number, p.name, p.team, p.score_excluded, a.prompt_id, a.match_name, a.match_team
     FROM players p LEFT JOIN answers a ON a.player_id = p.id
-    ORDER BY p.created_at, p.id, a.prompt_id
+    ORDER BY p.created_at, p.rowid, a.prompt_id
   `).all();
   const players = new Map();
-  const teams = Object.fromEntries(TEAMS.map(({ id }) => [id, { players: 0, answers: 0, points: 0 }]));
-  for (const { id, name, team, prompt_id, match_name, match_team } of results) {
+  const teams = Object.fromEntries(TEAMS.map(({ id }) => [id, { players: 0, counted: 0, answers: 0, points: 0 }]));
+  for (const { player_number: number, name, team, score_excluded: excluded, prompt_id, match_name, match_team } of results) {
     const totals = teams[team];
-    if (!players.has(id)) {
-      players.set(id, { name, team, points: 0, answers: [] });
+    if (!players.has(number)) {
+      const counted = !excluded && (limit === null || totals.counted < limit);
+      players.set(number, { number, name, team, excluded, counted, points: 0, answers: [] });
       totals.players++;
+      if (counted) totals.counted++;
     }
     if (prompt_id == null) continue;
-    const entry = players.get(id);
+    const entry = players.get(number);
     const points = team === match_team ? 1 : 2;
     entry.points += points;
     entry.answers.push({ prompt_id, match_name, match_team, points });
-    totals.points += points;
-    totals.answers++;
+    if (entry.counted) {
+      totals.points += points;
+      totals.answers++;
+    }
   }
   const ranked = Array.from(players.values()).sort((first, second) =>
     second.points - first.points || first.name.localeCompare(second.name));
@@ -162,21 +166,33 @@ const resetMessages = new Map([
   ["stale", "This round has already been reset. Check the current scores before trying again."],
 ]);
 
-function renderOwner({ teams, players }, version, resetResult) {
+const scoringMessages = new Map([
+  ["saved", "Group scoring updated."],
+  ["invalid", "Enter a whole number above zero or leave the limit blank."],
+  ["stale", "This dashboard is out of date. Check the current round before changing scores."],
+]);
+
+function renderOwner({ teams, players }, version, limit, resetResult, scoringResult) {
   const totals = TEAMS.map(({ id, icon, name }) => {
-    const { points, players: count, answers } = teams[id];
+    const { points, players: count, counted, answers } = teams[id];
     return `<div class="summary team-${id}">
       <h2><span aria-hidden="true">${icon}</span> ${name}</h2>
       <strong>${points.toLocaleString("en-SG")} pts</strong>
-      <p>${count} ${count === 1 ? "player" : "players"} · ${answers} logged</p>
+      <p>${counted} of ${count} counted · ${answers} answers counted</p>
     </div>`;
   }).join("");
-  const rows = players.map(({ name, team, points, answers }) => {
+  const rows = players.map(({ number, name, team, points, answers, excluded, counted }) => {
+    const status = counted ? "Counts for group" : excluded ? "Excluded by owner" : "Over group limit";
     const matches = answers.map(({ prompt_id, match_name, match_team, points: earned }) => `
       <li><span>${escapeHtml(PROMPTS[prompt_id - 1].title)}</span><span>${escapeHtml(match_name)} · ${teamName(match_team)}</span><strong>+${earned}</strong></li>
     `).join("");
     return `<details class="player-row">
-      <summary><strong>${escapeHtml(name)}</strong><span> · ${teamName(team)} · ${points} pts · ${answers.length} / ${PROMPTS.length} logged</span></summary>
+      <summary><strong>${escapeHtml(name)}</strong><span> · ${teamName(team)} · ${points} pts · ${answers.length} / ${PROMPTS.length} logged · ${status}</span></summary>
+      <form action="/owner/scoring" method="post" class="score-player-form">
+        <input type="hidden" name="version" value="${version}">
+        <input type="hidden" name="player" value="${number}">
+        <button class="quiet" name="excluded" value="${excluded ? 0 : 1}" type="submit">${excluded ? "Allow scoring for group" : "Exclude from group total"}</button>
+      </form>
       ${matches ? `<ul class="answer-list">${matches}</ul>` : '<p class="muted no-answers">No answers yet.</p>'}
     </details>`;
   }).join("");
@@ -204,6 +220,18 @@ function renderOwner({ teams, players }, version, resetResult) {
     </div>
     ${resetMessages.has(resetResult) ? `<p class="reset-status" role="status">${resetMessages.get(resetResult)}</p>` : ""}
     <div class="summary-grid" role="group" aria-label="Group totals">${totals}</div>
+    <section class="scoring-panel" aria-labelledby="scoring-title">
+      <h2 id="scoring-title">Group scoring limit</h2>
+      <p class="muted" id="scoring-help">Set the same limit for each group. Eligible players count in join order. To leave someone out, open their entry below and exclude them from the group total. Everyone keeps their individual score.</p>
+      <form action="/owner/scoring" method="post" class="score-limit-form">
+        <input type="hidden" name="version" value="${version}">
+        <label class="stacked-label" for="score-limit">Players counted per group
+          <input type="number" id="score-limit" aria-describedby="scoring-help" name="limit" min="1" step="1" value="${limit ?? ""}" placeholder="No limit">
+        </label>
+        <button class="quiet" type="submit">Save limit</button>
+      </form>
+      ${scoringMessages.has(scoringResult) ? `<p class="scoring-feedback" role="status">${scoringMessages.get(scoringResult)}</p>` : ""}
+    </section>
     <h2 class="owner-list-title">Player scores</h2>
     ${rows || '<p class="empty-message">Players and scores will appear as people join the game.</p>'}
     <details class="reset-panel" ${resetResult === "confirm" ? "open" : ""}>
@@ -289,9 +317,12 @@ async function ownerRoute(request, env) {
   if (request.method === "HEAD") return new Response(null, { headers: ownerHeaders });
   if (!authorized) return new Response(lockedPage, { headers: ownerHeaders });
 
-  const { version } = await env.DB.prepare(`SELECT ${roundVersion} AS version`).first();
-  const resetResult = new URL(request.url).searchParams.get("reset");
-  return new Response(renderOwner(await scores(env.DB), version, resetResult), { headers: ownerHeaders });
+  const { version, score_limit: limit } = await env.DB.prepare(
+    `SELECT ${roundVersion} AS version, (SELECT score_limit FROM game_round WHERE id = 1) AS score_limit`,
+  ).first();
+  const query = new URL(request.url).searchParams;
+  const html = renderOwner(await scores(env.DB, limit), version, limit, query.get("reset"), query.get("scoring"));
+  return new Response(html, { headers: ownerHeaders });
 }
 
 async function resetGame(request, env) {
@@ -322,6 +353,46 @@ async function resetGame(request, env) {
     `).bind(version, version),
   ]);
   return redirect(advance.meta.changes ? "done" : "stale");
+}
+
+function wholeNumber(value, minimum) {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= minimum ? number : null;
+}
+
+async function updateGroupScoring(request, env) {
+  if (!await ownerAuthorized(request, env.OWNER_BOOKMARK_SECRET)) return fail("Owner access required.", 401);
+  if (request.headers.get("Origin") !== new URL(request.url).origin) {
+    return fail("Update group scoring from the owner dashboard.", 403);
+  }
+  const form = await request.formData().catch(() => null);
+  const version = wholeNumber(form?.get("version"), 0);
+  if (version === null) return fail("Missing round version.", 400);
+  const redirect = (result) => new Response(null, {
+    status: 303,
+    headers: { ...ownerHeaders, Location: "/owner?scoring=" + result },
+  });
+
+  if (form.has("player")) {
+    const player = wholeNumber(form.get("player"), 1);
+    const excluded = form.get("excluded");
+    if (player === null || !["0", "1"].includes(excluded)) return fail("Invalid player selection.", 400);
+    const changed = await env.DB.prepare(
+      `UPDATE players SET score_excluded = ? WHERE rowid = ? AND ${roundVersion} = ?`,
+    ).bind(Number(excluded), player, version).run();
+    return redirect(changed.meta.changes ? "saved" : "stale");
+  }
+
+  const rawLimit = form.get("limit");
+  const limit = rawLimit === "" ? null : wholeNumber(rawLimit, 1);
+  if (rawLimit !== "" && limit === null) return redirect("invalid");
+  const changed = await env.DB.prepare(`
+    INSERT INTO game_round (id, version, score_limit)
+    SELECT 1, ?, ? WHERE ${roundVersion} = ?
+    ON CONFLICT (id) DO UPDATE SET score_limit = excluded.score_limit
+  `).bind(version, limit, version).run();
+  return redirect(changed.meta.changes ? "saved" : "stale");
 }
 
 async function handleApi(request, env, pathname) {
@@ -370,6 +441,7 @@ export default {
         }
         return response;
       }
+      if (pathname === "/owner/scoring" && request.method === "POST") return await updateGroupScoring(request, env);
       if (pathname === "/owner/reset" && request.method === "POST") return await resetGame(request, env);
       if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
       if (pathname === "/owner" || pathname === "/owner/") return await ownerRoute(request, env);

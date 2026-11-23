@@ -246,3 +246,11 @@ dialog form { padding: clamp(17px, 4vw, 24px); display: grid; gap: 13px; }
 .reset-form { display: grid; justify-items: start; gap: 14px; padding: 4px 16px 16px; }
 .reset-form p { color: var(--muted); line-height: 1.5; }
 .reset-button { min-height: 44px; color: var(--error); }
+
+.scoring-panel { margin: 0 0 22px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.scoring-panel p { margin-top: 8px; line-height: 1.5; }
+.score-limit-form { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-top: 12px; }
+.score-limit-form input { width: 100%; min-height: 44px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: #191628; color: var(--text); }
+.score-limit-form button, .score-player-form button { min-height: 44px; }
+.score-player-form { padding: 0 14px 12px; }
+.scoring-feedback { color: var(--lime); }
